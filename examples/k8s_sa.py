@@ -6,9 +6,7 @@ from typing import Optional
 
 from kubernetes import client, config
 
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import Task, Workflow, WorkflowService
 
 
 def get_sa_token(service_account: str, namespace: str = "default", config_file: Optional[str] = None):
@@ -43,11 +41,11 @@ def hello():
 
 
 namespace = "argo"
-token = get_sa_token("argo-server", namespace=namespace)
+_token = get_sa_token("argo-server", namespace=namespace)
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='https://my-argo-server.com', token=token, namespace=namespace)
-w = Workflow("k8s-sa", ws)
-t = Task("t", hello)
-w.add_task(t)
-w.create(namespace=namespace)
+with Workflow(
+    "k8s-sa", service=WorkflowService(host="https://my-argo-server.com", token=_token, namespace=namespace)
+) as w:
+    Task("t", hello)
+
+w.create()

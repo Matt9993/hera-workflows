@@ -1,5 +1,5 @@
 # IDE
-
+.DS_Store
 .idea
 .vscode
 
@@ -75,6 +75,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/_static/
+docs/_templates/
 
 # PyBuilder
 .pybuilder/
@@ -141,3 +143,6 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# vim
+*swp

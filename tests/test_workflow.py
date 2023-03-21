@@ -1,15 +1,22 @@
-from unittest.mock import MagicMock, Mock, patch
+from unittest import mock
+from unittest.mock import Mock, patch
 
 import pytest
-from argo_workflows.model.pod_security_context import PodSecurityContext
 from argo_workflows.models import HostAlias as ArgoHostAlias
+from argo_workflows.models import (
+    IoArgoprojWorkflowV1alpha1Workflow,
+    IoArgoprojWorkflowV1alpha1WorkflowSpec,
+    PodSecurityContext,
+)
 
+from hera.dag import DAG
 from hera.host_alias import HostAlias
-from hera.operator import Operator
-from hera.resources import Resources
-from hera.security_context import WorkflowSecurityContext
+from hera.host_config import set_global_service_account_name
+from hera.metric import Metric, Metrics
+from hera.parameter import Parameter
 from hera.task import Task
 from hera.template_ref import TemplateRef
+from hera.toleration import GPUToleration
 from hera.ttl_strategy import TTLStrategy
 from hera.volume_claim_gc import VolumeClaimGCStrategy
 from hera.volumes import (
@@ -19,397 +26,532 @@ from hera.volumes import (
     SecretVolume,
     Volume,
 )
-from hera.workflow import Workflow
-from hera.workflow_status import WorkflowStatus
-
-
-def test_wf_contains_specified_service_account(ws):
-    w = Workflow('w', service=ws, service_account_name='w-sa')
-
-    expected_sa = 'w-sa'
-    assert w.spec.service_account_name == expected_sa
-    assert w.spec.templates[0].service_account_name == expected_sa
-
-
-def test_wf_does_not_contain_sa_if_one_is_not_specified(ws):
-    w = Workflow('w', service=ws)
-
-    assert not hasattr(w.spec, 'service_account_name')
+from hera.workflow import Task, Workflow, WorkflowSecurityContext
 
 
 @pytest.fixture
 def workflow_security_context_kwargs():
-    sc_kwargs = {
+    return {
         "run_as_user": 1000,
         "run_as_group": 1001,
         "fs_group": 1002,
         "run_as_non_root": False,
     }
-    return sc_kwargs
 
 
-def test_wf_contains_specified_security_context(ws, workflow_security_context_kwargs):
-    wsc = WorkflowSecurityContext(**workflow_security_context_kwargs)
-    w = Workflow('w', service=ws, security_context=wsc)
-
-    expected_security_context = PodSecurityContext(**workflow_security_context_kwargs)
-    assert w.spec.security_context == expected_security_context
-
-
-@pytest.mark.parametrize("set_only", ["run_as_user", "run_as_group", "fs_group", "run_as_non_root"])
-def test_wf_specified_partial_security_context(ws, set_only, workflow_security_context_kwargs):
-    one_param_kwargs = {set_only: workflow_security_context_kwargs[set_only]}
-    wsc = WorkflowSecurityContext(**one_param_kwargs)
-    w = Workflow('w', service=ws, security_context=wsc)
-    expected_security_context = PodSecurityContext(**one_param_kwargs)
-    assert w.spec.security_context == expected_security_context
-
-
-def test_wf_does_not_contain_specified_security_context(ws):
-    w = Workflow('w', service=ws)
-
-    assert "security_context" not in w.spec
-
-
-def test_wf_does_not_add_empty_task(w):
-    t = None
-    w.add_task(t)
-
-    assert not w.dag_template.tasks
-
-
-def test_wf_adds_specified_tasks(w, no_op):
-    n = 3
-    ts = [Task(f't{i}', no_op) for i in range(n)]
-    w.add_tasks(*ts)
-
-    assert len(w.dag_template.tasks) == n
-    for i, t in enumerate(w.dag_template.tasks):
-        assert ts[i].name == t.name
-
-
-def test_wf_adds_task_volume(w, no_op):
-    t = Task(
-        't',
-        no_op,
-        resources=Resources(volumes=[Volume(name='v', size='1Gi', mount_path='/', storage_class_name='custom')]),
-    )
-    w.add_task(t)
-
-    claim = w.spec.volume_claim_templates[0]
-    assert claim.spec.access_modes == ['ReadWriteOnce']
-    assert claim.spec.resources.requests['storage'] == '1Gi'
-    assert claim.spec.storage_class_name == 'custom'
-    assert claim.metadata.name == 'v'
-
-
-def test_wf_adds_task_secret_volume(w, no_op):
-    t = Task('t', no_op, resources=Resources(volumes=[SecretVolume(name='s', secret_name='sn', mount_path='/')]))
-    w.add_task(t)
-
-    vol = w.spec.volumes[0]
-    assert vol.name == 's'
-    assert vol.secret.secret_name == 'sn'
-
-
-def test_wf_adds_task_config_map_volume(w):
-    t = Task('t', resources=Resources(volumes=[ConfigMapVolume(config_map_name='cmn', mount_path='/')]))
-    w.add_task(t)
-
-    assert w.spec.volumes[0].name
-    assert w.spec.volumes[0].config_map.name == "cmn"
-
-
-def test_wf_adds_task_existing_checkpoints_staging_volume(w, no_op):
-    t = Task('t', no_op, resources=Resources(volumes=[ExistingVolume(name='v', mount_path='/')]))
-    w.add_task(t)
-
-    vol = w.spec.volumes[0]
-    assert vol.name == 'v'
-    assert vol.persistent_volume_claim.claim_name == 'v'
-
-
-def test_wf_adds_task_existing_checkpoints_prod_volume(w, no_op):
-    t = Task(
-        't',
-        no_op,
-        resources=Resources(volumes=[ExistingVolume(name='vol', mount_path='/')]),
-    )
-    w.add_task(t)
-
-    vol = w.spec.volumes[0]
-    assert vol.name == 'vol'
-    assert vol.persistent_volume_claim.claim_name == 'vol'
-
-
-def test_wf_adds_task_empty_dir_volume(w, no_op):
-    t = Task('t', no_op, resources=Resources(volumes=[EmptyDirVolume(name='v')]))
-    w.add_task(t)
-
-    vol = w.spec.volumes[0]
-    assert vol.name == 'v'
-    assert not vol.empty_dir.size_limit
-    assert vol.empty_dir.medium == 'Memory'
-
-
-def test_wf_adds_head(w, no_op):
-    t1 = Task('t1', no_op)
-    t2 = Task('t2', no_op)
-    t1 >> t2
-    w.add_tasks(t1, t2)
-
-    h = Task('head', no_op)
-    w.add_head(h)
-
-    assert t1.argo_task.dependencies == ['head']
-    assert t2.argo_task.dependencies == ['t1', 'head']
-
-
-def test_wf_adds_tail(w, no_op):
-    t1 = Task('t1', no_op)
-    t2 = Task('t2', no_op)
-    t1 >> t2
-    w.add_tasks(t1, t2)
-
-    t = Task('tail', no_op)
-    w.add_tail(t)
-
-    assert not hasattr(t1.argo_task, 'dependencies')
-    assert t2.argo_task.dependencies == ['t1']
-    assert t.argo_task.dependencies == ['t2']
-
-
-def test_wf_overwrites_head_and_tail(w, no_op):
-    t1 = Task('t1', no_op)
-    t2 = Task('t2', no_op)
-    t1 >> t2
-    w.add_tasks(t1, t2)
-
-    h2 = Task('head2', no_op)
-    w.add_head(h2)
-
-    assert t1.argo_task.dependencies == ['head2']
-    assert t2.argo_task.dependencies == ['t1', 'head2']
-
-    h1 = Task('head1', no_op)
-    w.add_head(h1)
-
-    assert h2.argo_task.dependencies == ['head1']
-    assert t1.argo_task.dependencies == ['head2', 'head1']
-    assert t2.argo_task.dependencies == ['t1', 'head2', 'head1']
-
-
-def test_wf_contains_specified_labels(ws):
-    w = Workflow('w', service=ws, labels={'foo': 'bar'})
-
-    expected_labels = {'foo': 'bar'}
-    assert w.metadata.labels == expected_labels
-
-
-def test_wf_contains_specified_annotations(ws):
-    w = Workflow('w', service=ws, annotations={'foo': 'bar'})
-
-    expected_annotations = {'foo': 'bar'}
-    assert w.metadata.annotations == expected_annotations
-
-
-def test_wf_submit_with_default(ws):
-    w = Workflow('w', service=ws, labels={'foo': 'bar'}, namespace="test")
-    w.service = Mock()
-    w.create()
-    w.service.create.assert_called_with(w.workflow, w.namespace)
-
-
-def test_wf_adds_image_pull_secrets(ws):
-    w = Workflow('w', service=ws, image_pull_secrets=['secret0', 'secret1'])
-    secrets = [{'name': secret.name} for secret in w.spec.get('image_pull_secrets')]
-    assert secrets[0] == {'name': 'secret0'}
-    assert secrets[1] == {'name': 'secret1'}
-
-
-def test_wf_adds_ttl_strategy(ws):
-    w = Workflow(
-        'w',
-        service=ws,
-        ttl_strategy=TTLStrategy(seconds_after_completion=5, seconds_after_failure=10, seconds_after_success=15),
-    )
-
-    expected_ttl_strategy = {
-        'seconds_after_completion': 5,
-        'seconds_after_failure': 10,
-        'seconds_after_success': 15,
-    }
-
-    assert w.spec.ttl_strategy._data_store == expected_ttl_strategy
-
-
-def test_wf_adds_volume_claim_gc_strategy_on_workflow_completion(ws):
-    w = Workflow('w', service=ws, volume_claim_gc_strategy=VolumeClaimGCStrategy.OnWorkflowCompletion)
-
-    expected_volume_claim_gc = {"strategy": "OnWorkflowCompletion"}
-
-    assert w.spec.volume_claim_gc._data_store == expected_volume_claim_gc
-
-
-def test_wf_adds_volume_claim_gc_strategy_on_workflow_success(ws):
-    w = Workflow('w', service=ws, volume_claim_gc_strategy=VolumeClaimGCStrategy.OnWorkflowSuccess)
-
-    expected_volume_claim_gc = {"strategy": "OnWorkflowSuccess"}
-
-    assert w.spec.volume_claim_gc._data_store == expected_volume_claim_gc
-
-
-def test_wf_adds_host_aliases(ws):
-    w = Workflow(
-        'w',
-        service=ws,
-        host_aliases=[
-            HostAlias(hostnames=["host1", "host2"], ip="0.0.0.0"),
-            HostAlias(hostnames=["host3"], ip="1.1.1.1"),
-        ],
-    )
-
-    assert w.spec.host_aliases[0] == ArgoHostAlias(hostnames=["host1", "host2"], ip="0.0.0.0")
-    assert w.spec.host_aliases[1] == ArgoHostAlias(hostnames=["host3"], ip="1.1.1.1")
-
-
-def test_wf_add_task_with_template_ref(w):
-    t = Task("t", template_ref=TemplateRef(name="name", template="template"))
-    w.add_task(t)
-
-    assert w.dag_template.tasks[0] == t.argo_task
-
-    # Not add a Task with TemplateRef to w.spec.templates
-    # Note: w.spec.templates[0] is a template of dag
-    assert len(w.spec.templates) == 1
-
-
-def test_wf_adds_exit_tasks(w, no_op):
-    t1 = Task('t1', no_op)
-    w.add_task(t1)
-
-    t2 = Task(
-        't2',
-        no_op,
-        resources=Resources(volumes=[SecretVolume(name='my-vol', mount_path='/mnt/my-vol', secret_name='my-secret')]),
-    ).on_workflow_status(Operator.equals, WorkflowStatus.Succeeded)
-    w.on_exit(t2)
-
-    t3 = Task(
-        't3', no_op, resources=Resources(volumes=[Volume(name='my-vol', mount_path='/mnt/my-vol', size='5Gi')])
-    ).on_workflow_status(Operator.equals, WorkflowStatus.Failed)
-    w.on_exit(t3)
-
-    assert len(w.exit_template.dag.tasks) == 2
-    assert len(w.spec.templates) == 5
-    assert len(w.spec.volume_claim_templates) == 1
-    assert len(w.spec.volumes) == 1
-
-
-def test_wf_catches_tasks_without_exit_status_conditions(w, no_op):
-    t1 = Task('t1', no_op)
-    w.add_task(t1)
-
-    t2 = Task('t2', no_op)
-    with pytest.raises(AssertionError) as e:
-        w.on_exit(t2)
-    assert (
-        str(e.value)
-        == 'Each exit task must contain a workflow status condition. Use `task.on_workflow_status(...)` to set it'
-    )
-
-
-def test_wf_catches_exit_tasks_without_parent_workflow_tasks(w, no_op):
-    t1 = Task('t1', no_op)
-    with pytest.raises(AssertionError) as e:
-        w.on_exit(t1)
-    assert str(e.value) == 'Cannot add an exit condition to empty workflows'
-
-
-def test_wf_contains_expected_default_exit_template(w):
-    assert w.exit_template
-    assert w.exit_template.name == 'exit-template'
-    assert w.exit_template.dag.tasks == []
-
-
-def test_workflow_visualize_generated_graph_structure(w, no_op):
-    t1 = Task('t1', no_op)
-    t2 = Task('t2', no_op)
-    t1 >> t2
-    w.add_tasks(t1, t2)
-
-    h2 = Task('head2', no_op)
-    w.add_head(h2)
-
-    # call visualize()
-    graph_obj = w.visualize(is_test=True)
-    assert graph_obj.comment == 'w'
-
-    # generate list of numbers with len of dot body elements
-    # len(2) is a node (Task) and len(4) is an edge (dependency)
-    element_len_list = [len(item.split(' ')) for item in graph_obj.body]
-    # check number of nodes (Tasks)
-    assert 3 == element_len_list.count(2)
-    # check number of edge (dependency)
-    assert 3 == element_len_list.count(4)
-
-    h1 = Task('head1', no_op)
-    w.add_head(h1)
-
-    # call visualize again after new node (Task)
-    # that is also a new head (new dependency)
-    updated_graph_obj = w.visualize(is_test=True)
-    element_len_list_new = [len(item.split(' ')) for item in updated_graph_obj.body]
-
-    # check number of nodes (Tasks)
-    assert 4 == element_len_list_new.count(2)
-    # check number of edge (dependency)
-    assert 6 == element_len_list_new.count(4)
-
-
-def test_wf_visualize_connection_style(w, no_op):
-    """
-    Test for checking if the style (filled, dotted...)
-    applied according to dependency.
-    """
-    r = Task('Random', no_op)
-    s = Task('Success', no_op)
-    f = Task('Failure', no_op)
-
-    # define dependency
-    r.on_success(s)
-    r.on_failure(f)
-
-    # add tasks
-    w.add_tasks(r, s, f)
-
-    # call visualize()
-    graph_obj = w.visualize(is_test=True)
-    element_len_list = [item.split(' ') for item in graph_obj.body]
-
-    # check the style for dependency
-    assert element_len_list[-2][-1][7:13] == "dotted"
-    assert element_len_list[-1][-1][7:13] == "dotted"
-
-
-def test_wf_viz_not_in_test_mode(w, no_op):
-    r = Task('Random', no_op)
-    s = Task('Success', no_op)
-    f = Task('Failure', no_op)
-
-    # define dependency
-    r.on_success(s)
-    r.on_failure(f)
-
-    # add tasks
-    w.add_tasks(r, s, f)
-
-    # call visualize() and get error
-    import graphviz as gviz
-
-    err = gviz.backend.ExecutableNotFound
-    graphviz = MagicMock(Digraph=lambda: MagicMock(render=MagicMock(side_effect=err("Can't find dot!"))))
-    graphviz.backend.ExecutableNotFound = err
-    with patch.dict("sys.modules", graphviz=graphviz):
-        with pytest.raises(err):
-            w.visualize()
+class TestWorkflow:
+    def test_wf_contains_specified_service_account(self, setup):
+        with Workflow("w", service_account_name="w-sa") as w:
+            expected_sa = "w-sa"
+            assert w.service_account_name == expected_sa
+            assert w.build().spec.service_account_name == expected_sa
+
+        set_global_service_account_name("w-sa")
+        with Workflow("w") as w:
+            expected_sa = "w-sa"
+            assert w.service_account_name == expected_sa
+            assert w.build().spec.service_account_name == expected_sa
+        set_global_service_account_name(None)
+
+    def test_wf_does_not_contain_sa_if_one_is_not_specified(self, setup):
+        with Workflow("w") as w:
+            assert not hasattr(w.build().spec, "service_account_name")
+
+    def test_wf_contains_specified_security_context(self, workflow_security_context_kwargs, setup):
+        wsc = WorkflowSecurityContext(**workflow_security_context_kwargs)
+        with Workflow("w", security_context=wsc) as w:
+            expected_security_context = PodSecurityContext(**workflow_security_context_kwargs)
+            assert w.build().spec.security_context == expected_security_context
+
+    @pytest.mark.parametrize("set_only", ["run_as_user", "run_as_group", "fs_group", "run_as_non_root"])
+    def test_wf_specified_partial_security_context(self, set_only, workflow_security_context_kwargs, setup):
+        one_param_kwargs = {set_only: workflow_security_context_kwargs[set_only]}
+        wsc = WorkflowSecurityContext(**one_param_kwargs)
+        with Workflow("w", security_context=wsc) as w:
+            expected_security_context = PodSecurityContext(**one_param_kwargs)
+            assert w.build().spec.security_context == expected_security_context
+
+    def test_wf_does_not_contain_specified_security_context(self, setup):
+        with Workflow("w") as w:
+            assert "security_context" not in w.build().spec
+
+    def test_wf_adds_specified_tasks(self, no_op):
+        n = 3
+        ts = [Task(f"t{i}", no_op) for i in range(n)]
+        w = Workflow('w')
+        w.add_tasks(*ts)
+
+        assert len(w.dag.tasks) == n
+        for i, t in enumerate(w.dag.tasks):
+            assert ts[i].name == t.name
+
+    def test_wf_adds_task_volume(self, w, no_op):
+        t = Task("t", no_op, volumes=[Volume(name="v", size="1Gi", mount_path="/", storage_class_name="custom")])
+        w.add_task(t)
+
+        claim = w.build().spec.volume_claim_templates[0]
+        assert claim.spec.access_modes == ["ReadWriteOnce"]
+        assert claim.spec.resources.requests["storage"] == "1Gi"
+        assert claim.spec.storage_class_name == "custom"
+        assert claim.metadata.name == "v"
+
+    def test_wf_adds_task_secret_volume(self, w, no_op):
+        t = Task("t", no_op, volumes=[SecretVolume(name="s", secret_name="sn", mount_path="/")])
+        w.add_task(t)
+
+        vol = w.build().spec.volumes[0]
+        assert vol.name == "s"
+        assert vol.secret.secret_name == "sn"
+
+    def test_wf_adds_task_config_map_volume(self, w):
+        with Workflow("w") as w:
+            Task("t", "print(42)", volumes=[ConfigMapVolume(config_map_name="cmn", mount_path="/")])
+        wb = w.build()
+        assert wb.spec["volumes"][0].name
+        assert wb.spec["volumes"][0].config_map.name == "cmn"
+
+    def test_wf_adds_task_existing_checkpoints_staging_volume(self, w, no_op):
+        t = Task("t", no_op, volumes=[ExistingVolume(name="v", mount_path="/")])
+        w.add_task(t)
+
+        vol = w.build().spec.volumes[0]
+        assert vol.name == "v"
+        assert vol.persistent_volume_claim.claim_name == "v"
+
+    def test_wf_adds_task_existing_checkpoints_prod_volume(self, w, no_op):
+        t = Task(
+            "t",
+            no_op,
+            volumes=[ExistingVolume(name="vol", mount_path="/")],
+        )
+        w.add_task(t)
+
+        vol = w.build().spec.volumes[0]
+        assert vol.name == "vol"
+        assert vol.persistent_volume_claim.claim_name == "vol"
+
+    def test_wf_adds_task_empty_dir_volume(w, no_op):
+        with Workflow("w") as w:
+            Task("t", no_op, volumes=[EmptyDirVolume(name="v")])
+
+        vol = w.build().spec.volumes[0]
+        assert vol.name == "v"
+        assert not hasattr(vol.empty_dir, "size_limit")
+        assert vol.empty_dir.medium == "Memory"
+
+    def test_wf_contains_specified_labels(self):
+        with Workflow("w", labels={"foo": "bar"}) as w:
+            expected_labels = {"foo": "bar"}
+            assert w.build().metadata.labels == expected_labels
+
+    def test_wf_contains_specified_annotations(self):
+        with Workflow("w", annotations={"foo": "bar"}) as w:
+            expected_annotations = {"foo": "bar"}
+            assert w.build().metadata.annotations == expected_annotations
+
+    def test_wf_submit_with_default(self):
+        with Workflow("w") as w:
+            w.service = Mock()
+        w.create()
+        assert w.generated_name is None
+        w.service.create_workflow.assert_called_with(w.build())
+
+    def test_wf_submit_with_generate_name(self):
+        returned_wf = Mock()
+        returned_wf.metadata = {"name": "w-12345"}
+        with Workflow("w-", generate_name=True) as w:
+            w.service = Mock()
+            w.service.create_workflow = Mock(return_value=returned_wf)
+        w.create()
+        assert w.generated_name == "w-12345"
+
+    def test_wf_adds_image_pull_secrets(self):
+        with Workflow("w", image_pull_secrets=["secret0", "secret1"]) as w:
+            secrets = [{"name": secret.name} for secret in w.build().spec.get("image_pull_secrets")]
+            assert secrets[0] == {"name": "secret0"}
+            assert secrets[1] == {"name": "secret1"}
+
+    def test_wf_adds_ttl_strategy(self):
+        with Workflow(
+            "w",
+            ttl_strategy=TTLStrategy(seconds_after_completion=5, seconds_after_failure=10, seconds_after_success=15),
+        ) as w:
+            expected_ttl_strategy = {
+                "seconds_after_completion": 5,
+                "seconds_after_failure": 10,
+                "seconds_after_success": 15,
+            }
+
+            assert w.build().spec.ttl_strategy._data_store == expected_ttl_strategy
+
+    def test_wf_adds_volume_claim_gc_strategy_on_workflow_completion(self):
+        with Workflow("w", volume_claim_gc_strategy=VolumeClaimGCStrategy.OnWorkflowCompletion) as w:
+            expected_volume_claim_gc = {"strategy": "OnWorkflowCompletion"}
+            assert w.build().spec.volume_claim_gc._data_store == expected_volume_claim_gc
+
+    def test_wf_adds_volume_claim_gc_strategy_on_workflow_success(self):
+        with Workflow("w", volume_claim_gc_strategy=VolumeClaimGCStrategy.OnWorkflowSuccess) as w:
+            expected_volume_claim_gc = {"strategy": "OnWorkflowSuccess"}
+            assert w.build().spec.volume_claim_gc._data_store == expected_volume_claim_gc
+
+    def test_wf_adds_host_aliases(self):
+        with Workflow(
+            "w",
+            host_aliases=[
+                HostAlias(hostnames=["host1", "host2"], ip="0.0.0.0"),
+                HostAlias(hostnames=["host3"], ip="1.1.1.1"),
+            ],
+        ) as w:
+            assert w.build().spec.host_aliases[0] == ArgoHostAlias(hostnames=["host1", "host2"], ip="0.0.0.0")
+            assert w.build().spec.host_aliases[1] == ArgoHostAlias(hostnames=["host3"], ip="1.1.1.1")
+
+    def test_wf_add_task_with_template_ref(self, w):
+        t = Task("t", template_ref=TemplateRef(name="name", template="template"))
+        w.add_task(t)
+
+        assert w.dag.tasks[0] == t
+
+        # Not add a Task with TemplateRef to w.spec.templates
+        # Note: w.spec.templates[0] is a template of dag
+        assert len(w.build().spec.templates) == 1
+
+    def test_wf_resets_context_indicator(self):
+        with Workflow("w") as w:
+            assert w.in_context
+        assert not w.in_context
+
+    def test_wf_raises_on_create_in_context(self):
+        with Workflow("w") as w:
+            with pytest.raises(ValueError) as e:
+                w.create()
+            assert str(e.value) == "Cannot invoke `create` when using a Hera context"
+
+    def test_wf_sets_parameter(self):
+        with Workflow("w", parameters=[Parameter("a", "42")]) as w:
+            assert w.parameters is not None
+            assert len(w.parameters) == 1
+            assert w.parameters[0].name == "a"
+            assert w.parameters[0].value == "42"
+            assert w.get_parameter("a").value == "{{workflow.parameters.a}}"
+            assert hasattr(w.build().spec, "arguments")
+            assert len(getattr(w.build().spec, "arguments").parameters) == 1
+
+    def test_build_metadata_returns_expected_object_meta(self, setup):
+        with Workflow("test", labels={"test": "test"}, annotations={"test": "test"}) as w:
+            meta = w._build_metadata(use_name=True)
+            assert hasattr(meta, "name")
+            assert meta.name == "test"
+            assert hasattr(meta, "labels")
+            assert meta.labels == {"test": "test"}
+            assert hasattr(meta, "annotations")
+            assert meta.annotations == {"test": "test"}
+            assert not hasattr(meta, "generate_name")
+
+            meta = w._build_metadata(use_name=False)
+            assert not hasattr(meta, "name")
+            assert hasattr(meta, "labels")
+            assert meta.labels == {"test": "test"}
+            assert hasattr(meta, "annotations")
+            assert meta.annotations == {"test": "test"}
+
+        with Workflow("test", generate_name=True) as w:
+            meta = w._build_metadata(use_name=True)
+            assert hasattr(meta, "generate_name")
+            assert meta.generate_name == "test"
+
+    def test_service_sets_service_as_expected(self, setup):
+        with Workflow("w") as w:
+            assert w._service is None
+            assert w.service is not None
+
+    def test_build_spec(self, affinity):
+        with Workflow(
+            "w",
+            parallelism=50,
+            node_selectors={"a": "b"},
+            affinity=affinity,
+            tolerations=[GPUToleration],
+            active_deadline_seconds=42,
+            metrics=Metrics(
+                [
+                    Metric(
+                        'a',
+                        'b',
+                    ),
+                    Metric(
+                        'c',
+                        'd',
+                    ),
+                ]
+            ),
+        ) as w:
+            spec = w._build_spec()
+            assert hasattr(spec, "parallelism")
+            assert spec.parallelism == 50
+            assert hasattr(spec, "affinity")
+            assert spec.affinity is not None
+            assert hasattr(spec, "tolerations")
+            assert len(spec.tolerations) == 1
+            assert hasattr(spec, "affinity")
+            assert hasattr(spec, "active_deadline_seconds")
+            assert spec.active_deadline_seconds == 42
+            assert hasattr(spec, "node_selector")
+            assert spec.node_selector == {"a": "b"}
+            assert hasattr(spec, "metrics")
+
+        with Workflow("w") as w:
+            spec = w._build_spec()
+            assert isinstance(spec, IoArgoprojWorkflowV1alpha1WorkflowSpec)
+            assert not hasattr(spec, "parallelism")
+            assert not hasattr(spec, "affinity")
+            assert not hasattr(spec, "tolerations")
+            assert not hasattr(spec, "node_selector")
+            assert not hasattr(spec, "active_deadline_seconds")
+            assert not hasattr(spec, "on_exit")
+
+        with Workflow("w") as w:
+            w.on_exit(Task("x"))
+            spec = w._build_spec()
+            assert isinstance(spec, IoArgoprojWorkflowV1alpha1WorkflowSpec)
+            assert hasattr(spec, "on_exit")
+            assert spec.on_exit == "x"
+            assert not hasattr(spec, "metrics")
+
+    def test_enter_sets_expected_fields(self):
+        w = Workflow("w", dag=DAG("d"))
+        assert not w.in_context
+        assert w.dag.name == 'd'
+
+    def test_on_exit(self):
+        with Workflow("w") as w1:
+            x = Task("x")
+            w1.on_exit(x)
+            assert w1.exit_task == "x"
+            assert x.is_exit_task
+
+        with Workflow("w") as w2:
+            w2.on_exit(DAG("d"))
+            assert w2.exit_task == "d"
+
+        with Workflow("w") as w3:
+            with pytest.raises(ValueError) as e:
+                w3.on_exit(42)  # type: ignore
+            assert "Unrecognized exit type" in str(e.value)
+            assert "supported types are `Task` and `DAG`" in str(e.value)
+
+    def test_delete(self):
+        service = mock.Mock()
+        service.delete_workflow = mock.Mock()
+        with Workflow("w", service=service) as w:
+            w.delete()
+        w.service.delete_workflow.assert_called_once_with("w")
+
+    def test_lint(self):
+        service = mock.Mock()
+        service.lint_workflow = mock.Mock()
+        with Workflow("w", service=service) as w:
+            w.lint()
+        w.service.lint_workflow.assert_called_once_with(w.build())
+
+    def test_parameter(self):
+        with Workflow("w", parameters=[Parameter("a", value="42")]) as w:
+            p = w.get_parameter("a")
+            assert isinstance(p, Parameter)
+            assert p.name == "a"
+            assert p.value == "{{workflow.parameters.a}}"
+
+        with pytest.raises(KeyError) as e:
+            Workflow("w").get_parameter("a")
+        assert str(e.value) == "'`a` is not a valid workflow parameter'"
+
+        with pytest.raises(KeyError) as e:
+            Workflow("w", parameters=[Parameter("a", value="42")]).get_parameter("b")
+        assert str(e.value) == "'`b` is not a valid workflow parameter'"
+
+    def test_get_name(self):
+        assert Workflow("w").get_name() == "{{workflow.name}}"
+
+    def test_workflow_adjusts_input_metrics(self):
+        with Workflow('w', metrics=Metric('a', 'b')) as w:
+            assert isinstance(w.metrics, Metrics)
+
+        with Workflow('w', metrics=[Metric('a', 'b')]) as w:
+            assert isinstance(w.metrics, Metrics)
+
+        with Workflow('w', metrics=Metrics([Metric('a', 'b')])) as w:
+            assert isinstance(w.metrics, Metrics)
+
+    def test_workflow_sets_dag_name(self):
+        w = Workflow("w", dag_name="dag-name")
+        assert w.dag.name == "dag-name"
+        assert w.build().spec.templates[0].name == "dag-name"
+
+        w = Workflow("w")
+        assert w.dag.name == "w"
+        assert w.build().spec.templates[0].name == "w"
+
+    def test_build(self):
+        wf = Workflow("w").build()
+        assert isinstance(wf, IoArgoprojWorkflowV1alpha1Workflow)
+        assert hasattr(wf, "api_version")
+        assert wf.api_version == "argoproj.io/v1alpha1"
+        assert isinstance(wf.api_version, str)
+        assert hasattr(wf, "kind")
+        assert isinstance(wf.kind, str)
+        assert wf.kind == "Workflow"
+
+    def test_raises_on_no_yaml_available(self):
+        import yaml
+
+        import hera.workflow
+
+        # TODO: is there a better way to temporarily mock/patch this value to make this test more atomic?
+        hera.workflow._yaml = None
+        with pytest.raises(ImportError) as e:
+            Workflow('w').to_yaml()
+        assert (
+            str(e.value) == "Attempted to use `to_yaml` but PyYAML is not available. "
+            "Install `hera-workflows[yaml]` to install the extra dependency"
+        )
+
+        hera.workflow._yaml = yaml
+
+    def test_to_yaml(self):
+        def hello():
+            print("Hello, Hera!")
+
+        with Workflow("hello-hera", node_selectors={'a_b_c': 'a_b_c'}, labels={'a_b_c': 'a_b_c'}) as w:
+            Task("t", hello)
+
+        expected_yaml = """apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  labels:
+    a_b_c: a_b_c
+  name: hello-hera
+spec:
+  entrypoint: hello-hera
+  nodeSelector:
+    a_b_c: a_b_c
+  templates:
+  - name: t
+    script:
+      command:
+      - python
+      image: python:3.7
+      source: 'import os
+
+        import sys
+
+        sys.path.append(os.getcwd())
+
+        print("Hello, Hera!")
+
+        '
+  - dag:
+      tasks:
+      - name: t
+        template: t
+    name: hello-hera
+"""
+        assert w.to_yaml() == expected_yaml
+
+    def test_to_dict(self):
+        def hello():
+            print("Hello, Hera!")
+
+        with Workflow("hello-hera", node_selectors={'a_b_c': 'a_b_c'}, labels={'a_b_c': 'a_b_c'}) as w:
+            Task("t", hello)
+        expected_dict = {
+            'metadata': {'name': 'hello-hera', 'labels': {'a_b_c': 'a_b_c'}},
+            'spec': {
+                'entrypoint': 'hello-hera',
+                'templates': [
+                    {
+                        'name': 't',
+                        'script': {
+                            'image': 'python:3.7',
+                            'source': 'import os\nimport sys\nsys.path.append(os.getcwd())\nprint("Hello, Hera!")\n',
+                            'command': ['python'],
+                        },
+                    },
+                    {'name': 'hello-hera', 'dag': {'tasks': [{'name': 't', 'template': 't'}]}},
+                ],
+                'nodeSelector': {'a_b_c': 'a_b_c'},
+            },
+            'apiVersion': 'argoproj.io/v1alpha1',
+            'kind': 'Workflow',
+        }
+        assert expected_dict == w.to_dict()
+
+    def test_to_json(self):
+        def hello():
+            print("Hello, Hera!")
+
+        with Workflow("hello-hera", node_selectors={'a_b_c': 'a_b_c'}, labels={'a_b_c': 'a_b_c'}) as w:
+            Task("t", hello)
+
+        expected_json = (
+            '{"metadata": {"name": "hello-hera", "labels": {"a_b_c": "a_b_c"}}, "spec": '
+            '{"entrypoint": "hello-hera", "templates": [{"name": "t", "script": {"image": '
+            '"python:3.7", "source": "import os\\nimport '
+            'sys\\nsys.path.append(os.getcwd())\\nprint(\\"Hello, Hera!\\")\\n", '
+            '"command": ["python"]}}, {"name": "hello-hera", "dag": {"tasks": [{"name": '
+            '"t", "template": "t"}]}}], "nodeSelector": {"a_b_c": "a_b_c"}}, '
+            '"apiVersion": "argoproj.io/v1alpha1", "kind": "Workflow"}'
+        )
+        assert expected_json == w.to_json()
+
+    def test_workflow_applies_hooks(self, global_config):
+        def hook1(w: Workflow) -> None:
+            w.service_account_name = "abc"
+
+        def hook2(w: Workflow) -> None:
+            w.labels = {'abc': '123'}
+
+        global_config.workflow_post_init_hooks = [hook1, hook2]
+        w = Workflow('w')
+        assert w.service_account_name == "abc"
+        assert w.labels == {'abc': '123'}
+
+    def test_workflow_visualize_generated_graph_structure(self, w, no_op):
+        t1 = Task('t1', no_op)
+        t2 = Task('t2', no_op)
+        t1 >> t2
+        w.add_tasks(t1, t2)
+
+        # call visualize()
+        graph_obj = w.visualize(is_test=True)
+        assert graph_obj.comment == 'w'
+
+        # generate list of numbers with len of dot body elements
+        # len(2) is a node (Task) and len(4) is an edge (dependency)
+        element_len_list = [len(item.split(' ')) for item in graph_obj.body]
+        # check number of nodes (Tasks)
+        assert 4 == element_len_list.count(2)
+        # check number of edge (dependency)
+        assert 2 == element_len_list.count(5)
+
+    def test_wf_visualize_connection_style(self, w, no_op):
+        """
+        Test for checking if the style (filled, dotted...)
+        applied according to dependency.
+        """
+        r = Task("random", no_op)
+        s = Task("success", no_op)
+        f = Task("failure", no_op)
+
+        # define dependency
+        r.on_success(s)
+        r.on_failure(f)
+
+        # add tasks
+        w.add_tasks(r, s, f)
+
+        # call visualize()
+        graph_obj = w.visualize(is_test=True)
+        element_len_list = [item.split(' ') for item in graph_obj.body]
+
+        # check the style for dependency
+        assert element_len_list[-2][-1][6:12] == "filled"
+        assert element_len_list[-1][-1][6:12] == "filled"

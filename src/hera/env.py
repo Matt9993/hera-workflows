@@ -1,5 +1,9 @@
+import hashlib
 import json
-from typing import Any, Optional
+import string
+from dataclasses import dataclass
+from itertools import islice
+from typing import Any, Optional, Union
 
 from argo_workflows.models import (
     ConfigMapKeySelector,
@@ -8,12 +12,28 @@ from argo_workflows.models import (
     ObjectFieldSelector,
     SecretKeySelector,
 )
-from pydantic import BaseModel, validator
 
-from hera.validators import json_serializable
+from hera.parameter import Parameter
 
 
-class EnvSpec(BaseModel):
+@dataclass
+class ConfigMapNamedKey:
+    """Config map representation. Supports the specification of a name/key string pair to identify a value"""
+
+    config_map_name: str
+    config_map_key: str
+
+
+@dataclass
+class SecretNamedKey:
+    """Secret map representation. Supports the specification of a name/key string pair to identify a value"""
+
+    secret_name: str
+    secret_key: str
+
+
+@dataclass
+class Env:
     """Environment variable specification for tasks.
 
     Attributes
@@ -21,10 +41,12 @@ class EnvSpec(BaseModel):
     name: str
         The name of the variable.
     value: Optional[Any] = None
-        The value of the variable. This value is serialized for the client. If a pydantic BaseModel is passed in the
-        corresponding `.json()` method will be used for serialization. It is up to the client to deserialize the value
-        in the task. In addition, if another type is passed, covered by `Any`, an attempt at `json.dumps` will be
+        The value of the variable. This value is serialized for the client. It is up to the client to deserialize the
+        value in the task. In addition, if another type is passed, covered by `Any`, an attempt at `json.dumps` will be
         performed.
+    value_from_input: Optional[Union[str, Parameter]] = None
+        An external reference which will resolve the env-value, E.g. another task's output parameter.
+        An input parameter will be auto-generated for the task the `Env` is instantiated in.
 
     Raises
     ------
@@ -34,18 +56,35 @@ class EnvSpec(BaseModel):
 
     name: str
     value: Optional[Any] = None
+    value_from_input: Optional[Union[str, Parameter]] = None
 
-    @validator('value')
-    def check_value_json_serializable(cls, value):
-        """Verifies that the specific environment value"""
-        assert json_serializable(value), 'specified value is not JSON serializable'
-        return value
+    @staticmethod
+    def _sanitise_param_for_argo(v: str) -> str:
+        """Argo has some strict parameter validation. To satisfy, we replace all ._ with a dash,
+        take only first 32 characters from a-zA-Z0-9-, and append md5 digest of the original string."""
+        # NOTE move this to some general purpose utils?
+        replaced_dashes = v.translate(str.maketrans({e: '-' for e in "_."}))  # type: ignore
+        legit_set = string.ascii_letters + string.digits + '-'
+        legit_prefix = "".join(islice((c for c in replaced_dashes if c in legit_set), 32))
+        hash_suffix = hashlib.md5(v.encode("utf-8")).hexdigest()
+        return f"{legit_prefix}-{hash_suffix}"
 
     @property
-    def argo_spec(self) -> EnvVar:
+    def param_name(self) -> str:
+        if not self.value_from_input:
+            raise ValueError(
+                "unexpected use of `param_name` -- without value_from_input, no param should be generated"
+            )
+        return Env._sanitise_param_for_argo(self.name)
+
+    def __post_init__(self):
+        if self.value is not None and self.value_from_input is not None:
+            raise ValueError("cannot specify both value and value_from_input")
+
+    def build(self) -> EnvVar:
         """Constructs and returns the Argo environment specification"""
-        if isinstance(self.value, BaseModel):
-            value = self.value.json()
+        if self.value_from_input is not None:
+            value = f"{{{{inputs.parameters.{self.param_name}}}}}"
         elif isinstance(self.value, str):
             value = self.value
         else:
@@ -53,7 +92,8 @@ class EnvSpec(BaseModel):
         return EnvVar(name=self.name, value=value)
 
 
-class SecretEnvSpec(EnvSpec):
+@dataclass
+class SecretEnv(Env, SecretNamedKey):
     """Environment variable specification from K8S secrets.
 
     Attributes
@@ -64,11 +104,7 @@ class SecretEnvSpec(EnvSpec):
         The key of the value within the secret.
     """
 
-    secret_name: str
-    secret_key: str
-
-    @property
-    def argo_spec(self) -> EnvVar:
+    def build(self) -> EnvVar:
         """Constructs and returns the Argo environment specification"""
         return EnvVar(
             name=self.name,
@@ -76,7 +112,8 @@ class SecretEnvSpec(EnvSpec):
         )
 
 
-class ConfigMapEnvSpec(EnvSpec):
+@dataclass
+class ConfigMapEnv(Env, ConfigMapNamedKey):
     """Environment variable specification from K8S config map.
 
     Attributes
@@ -87,11 +124,7 @@ class ConfigMapEnvSpec(EnvSpec):
         The key of the value within the config map.
     """
 
-    config_map_name: str
-    config_map_key: str
-
-    @property
-    def argo_spec(self) -> EnvVar:
+    def build(self) -> EnvVar:
         """Constructs and returns the Argo environment specification"""
         return EnvVar(
             name=self.name,
@@ -101,22 +134,44 @@ class ConfigMapEnvSpec(EnvSpec):
         )
 
 
-class FieldEnvSpec(EnvSpec):
-    """Environment variable specification from K8S object field.
+@dataclass
+class FieldPath:
+    """Field path representation.
+
+    This allows obtaining K8S values via indexing into specific fields of the K8S definition.
 
     Attributes
     ----------
     field_path: str
-        The path of the object field to load values from.
+        Path to the field to obtain the value from.
+    """
+
+    field_path: str
+
+
+@dataclass
+class FieldEnv(Env, FieldPath):
+    """Environment variable specification from K8S object field.
+
+    Attributes
+    ----------
+    name: str
+        The name of the variable.
+    value: Optional[Any] = None
+        The value of the variable. This value is serialized for the client. It is up to the client to deserialize the
+        value in the task. In addition, if another type is passed, covered by `Any`, an attempt at `json.dumps` will be
+        performed.
+    value_from_input: Optional[str] = None
+        A reference to an input parameter which will resolve to the value. The input parameter will be auto-generated.
+    field_path: str
+        Path to the field to obtain the value from.
     api_version: Optional[str] = 'v1'
         The version of the schema the FieldPath is written in terms of. Defaults to 'v1'.
     """
 
-    field_path: str
-    api_version: Optional[str] = 'v1'
+    api_version: Optional[str] = "v1"
 
-    @property
-    def argo_spec(self) -> EnvVar:
+    def build(self) -> EnvVar:
         """Constructs and returns the Argo environment specification"""
         return EnvVar(
             name=self.name,

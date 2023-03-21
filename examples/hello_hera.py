@@ -1,16 +1,13 @@
 """This example showcases the hello world example of Hera"""
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import Task, Workflow
 
 
 def hello():
-    print('Hello, Hera!')
+    print("Hello, Hera!")
 
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='https://my-argo-server.com', token='my-auth-token')
-w = Workflow('hello-hera', ws)
-t = Task('t', hello)
-w.add_task(t)
+# assumes you used `hera.set_global_token` and `hera.set_global_host` so that the workflow can be submitted
+with Workflow("hello-hera") as w:
+    Task("t", hello)
+
 w.create()

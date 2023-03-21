@@ -1,8 +1,5 @@
 """This example showcases the classic conditional workflow coin-flip."""
-from hera.operator import Operator
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import Task, Workflow
 
 
 def random_code():
@@ -20,15 +17,13 @@ def tails():
     print("it was tails")
 
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='https://my-argo-server.com', token='my-auth-token')
-w = Workflow("coin-flip", ws)
-r = Task("r", random_code)
-h = Task("h", heads)
-t = Task("t", tails)
+# assumes you used `hera.set_global_token` and `hera.set_global_host` so that the workflow can be submitted
+with Workflow("coin-flip") as w:
+    r = Task("r", random_code)
+    h = Task("h", heads)
+    t = Task("t", tails)
 
-h.when(r, Operator.equals, "heads")
-t.when(r, Operator.equals, "tails")
+    h.on_other_result(r, "heads")
+    t.on_other_result(r, "tails")
 
-w.add_tasks(r, h, t)
 w.create()

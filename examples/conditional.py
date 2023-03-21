@@ -1,7 +1,5 @@
 """This example showcases conditional execution on success, failure, and error"""
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import Task, Workflow
 
 
 def random():
@@ -9,28 +7,24 @@ def random():
 
     p = random.random()
     if p <= 0.5:
-        raise Exception('FAILURE')
-    print('SUCCESS')
+        raise Exception("failure")
+    print("success")
 
 
 def success():
-    print("SUCCESS")
+    print("success")
 
 
 def failure():
-    print("FAILURE")
+    print("failure")
 
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='https://my-argo-server.com', token='my-auth-token')
-w = Workflow("conditional", ws)
+with Workflow("conditional") as w:
+    r = Task("random", random)
+    s = Task("success", success)
+    f = Task("failure", failure)
 
-r = Task('random', random)
-s = Task('success', success)
-f = Task('failure', failure)
+    r.on_success(s)
+    r.on_failure(f)
 
-r.on_success(s)
-r.on_failure(f)
-
-w.add_tasks(r, s, f)
 w.create()

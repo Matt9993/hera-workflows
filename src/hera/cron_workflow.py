@@ -1,227 +1,139 @@
 """The implementation of a Hera cron workflow for Argo-based cron workflows"""
-from datetime import datetime
-from datetime import timezone as tz
-from typing import Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Optional, Tuple
 
 import pytz
 from argo_workflows.models import (
     IoArgoprojWorkflowV1alpha1CronWorkflow,
     IoArgoprojWorkflowV1alpha1CronWorkflowSpec,
-    IoArgoprojWorkflowV1alpha1CronWorkflowStatus,
-    IoArgoprojWorkflowV1alpha1DAGTemplate,
-    IoArgoprojWorkflowV1alpha1Template,
-    IoArgoprojWorkflowV1alpha1VolumeClaimGC,
-    IoArgoprojWorkflowV1alpha1WorkflowSpec,
-    IoArgoprojWorkflowV1alpha1WorkflowTemplateRef,
-    LocalObjectReference,
-    ObjectMeta,
 )
 
-from hera.cron_workflow_service import CronWorkflowService
-from hera.host_alias import HostAlias
-from hera.security_context import WorkflowSecurityContext
-from hera.task import Task
-from hera.ttl_strategy import TTLStrategy
-from hera.volume_claim_gc import VolumeClaimGCStrategy
-from hera.workflow_editors import add_head, add_tail, add_task, add_tasks, on_exit
+from hera.global_config import GlobalConfig
+from hera.workflow import Workflow
 
 
-class CronWorkflow:
+class ConcurrencyPolicy(str, Enum):
+    """Specifies how to treat concurrent executions of a job that is created by a cron workflow.
+
+    Notes
+    -----
+    See https://kubernetes.io/docs/tasks/job/automated-tasks-with-cron-jobs/#concurrency-policy
+    """
+
+    Allow = "Allow"
+    """Default, cron job allows concurrently running jobs"""
+
+    Replace = "Replace"
+    """
+    If it is time for a new job run and the previous job run hasn't finished yet, the cron job replaces the
+    currently running job run with a new job run
+    """
+
+    Forbid = "Forbid"
+    """
+    The cron job does not allow concurrent runs; if it is time for a new job run and the previous job run hasn't
+    finished yet, the cron job skips the new job run.
+    """
+
+    def __str__(self):
+        return str(self.value)
+
+
+class CronWorkflow(Workflow):
     """A cron workflow representation.
 
     CronWorkflow are workflows that run on a preset schedule.
     In essence, CronWorkflow = Workflow + some specific cron options.
 
+    See https://argoproj.github.io/argo-workflows/cron-workflows/
+
     Parameters
     ----------
     name: str
-        The cron workflow name. Note that the cron workflow initiation will replace underscores with dashes.
-    service: CronWorkflowService
-        A cron workflow service to use for creations. See `hera.v1.cron_workflow_service.CronWorkflowService`.
-    timezone: str
-        Timezone during which the Workflow will be run from the IANA timezone standard, e.g. America/Los_Angeles.
+        Name of the workflow.
     schedule: str
-        Schedule at which the Workflow will be run in Cron format. E.g. 5 4 * * *.
-    parallelism: int = 50
-        The number of parallel tasks to run in case a task group is executed for multiple tasks.
-    service_account_name: Optional[str] = None
-        The name of the service account to use in all workflow tasks.
-    labels: Optional[Dict[str, str]] = None
-        A Dict of labels to attach to the CronWorkflow object metadata.
-    annotations: Optional[Dict[str, str]] = None
-        A Dict of annotations to attach to the CronWorkflow object metadata.
-    namespace: Optional[str] = 'default'
-        The namespace to use by default when calling create/update/suspend/resume.  Defaults to 'default'.
-    security_context:  Optional[WorkflowSecurityContext] = None
-        Define security settings for all containers in the workflow.
-    image_pull_secrets: Optional[List[str]] = None
-        A list of image pull secrets. This is used to authenticate with the private image registry of the images
-        used by tasks.
-    workflow_template_ref: Optional[str] = None
-        The name of the workflowTemplate reference. WorkflowTemplateRef is a reference to a WorkflowTemplate resource.
-        If you create a WorkflowTemplate resource either clusterWorkflowTemplate or not (clusterScope attribute bool)
-        you can reference it again and again when you create a new Workflow without specifying the same tasks and
-        dependencies. Official doc: https://argoproj.github.io/argo-workflows/fields/#workflowtemplateref
-    volume_claim_gc_strategy: Optional[VolumeClaimGCStrategy] = None
-        Define how to delete volumes from completed Workflows.
-    host_aliases: Optional[List[HostAlias]] = None
-        Mappings between IP and hostnames.
+        Schedule at which the Workflow will be run in Cron format e.g. 5 4 * * *.
+    concurrency_policy: Optional[ConcurrencyPolicy] = None
+        Concurrency policy that dictates the concurrency behavior of multiple cron jobs of the same kind.
+        See `hera.cron_workflow.ConcurrencyPolicy`
+    starting_deadline_seconds: Optional[int] = None
+        The number of seconds the workflow has as a starting deadline.
+    timezone: Optional[str] = None
+        Timezone during which the Workflow will be run from the IANA timezone standard, e.g. America/Los_Angeles.
+    **kwargs
+        Any kwargs to set on the workflow. See `hera.workflow.Workflow`.
     """
 
     def __init__(
         self,
         name: str,
         schedule: str,
-        service: CronWorkflowService,
+        concurrency_policy: Optional[ConcurrencyPolicy] = None,
+        starting_deadline_seconds: Optional[int] = None,
         timezone: Optional[str] = None,
-        parallelism: int = 50,
-        service_account_name: Optional[str] = None,
-        labels: Optional[Dict[str, str]] = None,
-        annotations: Optional[Dict[str, str]] = None,
-        namespace: Optional[str] = "default",
-        security_context: Optional[WorkflowSecurityContext] = None,
-        image_pull_secrets: Optional[List[str]] = None,
-        workflow_template_ref: Optional[str] = None,
-        ttl_strategy: Optional[TTLStrategy] = None,
-        volume_claim_gc_strategy: Optional[VolumeClaimGCStrategy] = None,
-        host_aliases: Optional[List[HostAlias]] = None,
+        **kwargs,
     ):
+        super().__init__(name, **kwargs)
         if timezone and timezone not in pytz.all_timezones:
-            raise ValueError(f'{timezone} is not a valid timezone')
-
-        self.name = name.replace("_", "-")
+            raise ValueError(f"{timezone} is not a valid timezone")
         self.schedule = schedule
         self.timezone = timezone
-        self.service = service
-        self.parallelism = parallelism
-        self.service_account_name = service_account_name
-        self.labels = labels
-        self.annotations = annotations
-        self.namespace = namespace
-        self.security_context = security_context
-        self.image_pull_secrets = image_pull_secrets
-        self.workflow_template_ref = workflow_template_ref
+        self.starting_deadline_seconds = starting_deadline_seconds
+        self.concurrency_policy = concurrency_policy
 
-        self.dag_template = IoArgoprojWorkflowV1alpha1DAGTemplate(tasks=[])
-        self.exit_template = IoArgoprojWorkflowV1alpha1Template(
-            name='exit-template',
-            steps=[],
-            dag=IoArgoprojWorkflowV1alpha1DAGTemplate(tasks=[]),
-            parallelism=self.parallelism,
+    def build(self) -> IoArgoprojWorkflowV1alpha1CronWorkflow:
+        """Builds the workflow representation"""
+        workflow = super().build()
+        cron_workflow_spec = IoArgoprojWorkflowV1alpha1CronWorkflowSpec(
+            schedule=self.schedule,
+            workflow_spec=workflow.spec,
+            workflow_metadata=super()._build_metadata(use_name=False),
         )
-
-        self.template = IoArgoprojWorkflowV1alpha1Template(
-            name=self.name,
-            steps=[],
-            dag=self.dag_template,
-            parallelism=self.parallelism,
-        )
-
-        if self.workflow_template_ref:
-            self.workflow_template = IoArgoprojWorkflowV1alpha1WorkflowTemplateRef(name=self.workflow_template_ref)
-            self.spec = IoArgoprojWorkflowV1alpha1WorkflowSpec(
-                workflow_template_ref=self.workflow_template,
-                entrypoint=self.workflow_template_ref,
-                volumes=[],
-                volume_claim_templates=[],
-            )
-        else:
-            self.spec = IoArgoprojWorkflowV1alpha1WorkflowSpec(
-                templates=[self.template], entrypoint=self.name, volumes=[], volume_claim_templates=[]
-            )
-
-        if ttl_strategy:
-            setattr(self.spec, 'ttl_strategy', ttl_strategy.argo_ttl_strategy)
-
-        if volume_claim_gc_strategy:
-            setattr(
-                self.spec,
-                'volume_claim_gc',
-                IoArgoprojWorkflowV1alpha1VolumeClaimGC(strategy=volume_claim_gc_strategy.value),
-            )
-
-        if host_aliases:
-            setattr(self.spec, 'host_aliases', [h.argo_host_alias for h in host_aliases])
-
-        if self.service_account_name:
-            setattr(self.template, 'service_account_name', self.service_account_name)
-            setattr(self.spec, 'service_account_name', self.service_account_name)
-
-        if self.security_context:
-            security_context = self.security_context.get_security_context()
-            setattr(self.spec, 'security_context', security_context)
-
-        if self.image_pull_secrets:
-            secret_refs = [LocalObjectReference(name=name) for name in self.image_pull_secrets]
-            setattr(self.spec, 'image_pull_secrets', secret_refs)
-
-        self.cron_spec = IoArgoprojWorkflowV1alpha1CronWorkflowSpec(schedule=self.schedule, workflow_spec=self.spec)
+        if self.concurrency_policy:
+            setattr(cron_workflow_spec, "concurrencyPolicy", self.concurrency_policy.value)
+        if self.starting_deadline_seconds:
+            setattr(cron_workflow_spec, "startingDeadlineSeconds", self.starting_deadline_seconds)
         if self.timezone:
-            setattr(self.cron_spec, 'timezone', self.timezone)
+            setattr(cron_workflow_spec, "timezone", self.timezone)
 
-        self.metadata = ObjectMeta(name=self.name)
-        if self.labels:
-            setattr(self.metadata, 'labels', self.labels)
-        if self.annotations:
-            setattr(self.metadata, 'annotations', self.annotations)
-
-        self.workflow = IoArgoprojWorkflowV1alpha1CronWorkflow(
-            metadata=self.metadata,
-            spec=self.cron_spec,
-            status=IoArgoprojWorkflowV1alpha1CronWorkflowStatus(
-                active=[], conditions=[], last_scheduled_time=datetime.now(tz.utc)
-            ),
+        return IoArgoprojWorkflowV1alpha1CronWorkflow(
+            api_version=GlobalConfig.api_version,
+            kind=self.__class__.__name__,
+            metadata=workflow.metadata,
+            spec=cron_workflow_spec,
         )
 
-    def add_task(self, t: Task) -> None:
-        add_task(self, t)
+    def create(self) -> "CronWorkflow":
+        """Creates the cron workflow"""
+        if self.in_context:
+            raise ValueError("Cannot invoke `create` when using a Hera context")
+        self.service.create_cron_workflow(self.build())
+        return self
 
-    def add_tasks(self, *ts: Task) -> None:
-        add_tasks(self, *ts)
+    def lint(self) -> "CronWorkflow":
+        """Lint the workflow"""
+        self.service.lint_cron_workflow(self.build())
+        return self
 
-    def add_head(self, t: Task, append: bool = True) -> None:
-        add_head(self, t, append=append)
+    def delete(self) -> Tuple[object, int, dict]:
+        """Deletes the cron workflow"""
+        return self.service.delete_cron_workflow(self.name)
 
-    def add_tail(self, t: Task, append: bool = True) -> None:
-        add_tail(self, t, append=append)
-
-    def on_exit(self, *t: Task) -> None:
-        on_exit(self, *t)
-
-    def create(self, namespace: Optional[str] = None) -> IoArgoprojWorkflowV1alpha1CronWorkflow:
-        """Creates the cron workflow in the server"""
-        if namespace is None:
-            namespace = self.namespace
-        return self.service.create(self.workflow, namespace)
-
-    def update(
-        self, name: Optional[str] = None, namespace: Optional[str] = None
-    ) -> IoArgoprojWorkflowV1alpha1CronWorkflow:
+    def update(self) -> "CronWorkflow":
         """Updates the cron workflow in the server"""
-        if namespace is None:
-            namespace = self.namespace
-        if name is None:
-            name = self.name
 
-        # When update cron_workflow, metadata.resourceVersion and metadata.uid should be same as the previous value.
-        old_workflow = self.service.get_workflow(name, namespace)
-        self.workflow.metadata['resourceVersion'] = old_workflow.metadata['resourceVersion']
-        self.workflow.metadata['uid'] = old_workflow.metadata['uid']
+        # when update cron_workflow, metadata.resourceVersion and metadata.uid should be same as the previous value
+        old_workflow = self.service.get_cron_workflow(self.name)
+        cron_workflow = self.build()
+        cron_workflow.metadata["resourceVersion"] = old_workflow.metadata["resourceVersion"]
+        cron_workflow.metadata["uid"] = old_workflow.metadata["uid"]
+        self.service.update_cron_workflow(self.name, cron_workflow)
+        return self
 
-        return self.service.update(self.workflow, name, namespace)
-
-    def suspend(self, name: Optional[str] = None, namespace: Optional[str] = None) -> Tuple[object, int, dict]:
+    def suspend(self) -> Tuple[object, int, dict]:
         """Suspends the cron workflow"""
-        if name is None:
-            name = self.name
-        if namespace is None:
-            namespace = self.namespace
-        return self.service.suspend(name, namespace)
+        return self.service.suspend_cron_workflow(self.name)
 
-    def resume(self, name: Optional[str] = None, namespace: Optional[str] = None) -> Tuple[object, int, dict]:
+    def resume(self) -> Tuple[object, int, dict]:
         """Resumes execution of the cron workflow"""
-        if name is None:
-            name = self.name
-        if namespace is None:
-            namespace = self.namespace
-        return self.service.resume(name, namespace)
+        return self.service.resume_cron_workflow(self.name)

@@ -28,13 +28,222 @@ The general format is:
 - C from D
 
 ```
-
-# 3.4.0 - DATE (29/05/2022)
+# 4.4.0 - DATE (21/03/2022)
 
 ### Added
 
-- Workflow and WorkflowTemplate visualisation. Generates an image with the visual
-  representation of the specific Workflow or WorkflowTemplate.
+- introduced  visualize  functionfor Workflows
+
+# 4.3.0 - DATE (16/12/2022)
+
+### Added
+
+- support for global hooks on task and workflow
+- support for unset parameters so Hera can be used in a GitOps style
+- better Workflow typing for inheritance
+- exit DAGs on workflows and tasks
+- mapping Python source specs via dictionaries on inputs
+- all accessible task properties
+- sidecars
+- suspend
+- artifact compression
+- raw artifact
+- PyYAML kwargs on `to_yaml`
+- supplied option on value from and parameter feature parity
+
+### Changed
+
+- workflow link from service when using the global host
+
+# 4.2.0 - DATE (31/10/2022)
+
+### Added
+
+- `expr` module for constructing Argo expressions
+
+# 4.1.0 - DATE (28/10/2022)
+
+### Added
+
+- `to_yaml`, `to_dict`, and `to_json` on workflows
+- optional PyYAML dependency (`hera-workflows[yaml]`)
+- global default service account
+- global task image
+- global SSL verification flag
+- `lint` API on workflows
+- `value_from_input` on `Env` sanitization so that the name satisfies RFC1123 requirements
+
+### Changed
+
+- DAG template naming to fix the issue of DAGs not being present on workflow templates
+- version constraints on dependencies from `^` to `>=`
+
+# 4.0.1 - DATE (05/10/2022)
+
+### Added
+
+- auto-setting of a DAG on the workflow so users do not necessarily need to supply one, so workflow additions
+  are executed against the set default DAG
+- a fix for positional args in sized volumes vs unsized volumes
+- the correct field specification for K8S resources
+
+# 4.0.0 - DATE (04/10/2022)
+
+### Added
+
+- archiving specifications
+- prometheus metrics
+- generated names on workflows
+- backoff custom object specification
+
+### Changed
+
+- Git artifact specification to set the correct fields based on input
+
+# 4.0.0rc3 - DATE (26/09/2022)
+
+### Added
+
+- support for `withSequence` on `Task`
+- `generate_name` on worfklow
+- active deadline seconds/timeouts on tasks and workflows
+
+### Changed
+
+- `EnvSpec` naming to `Env`, including inheriting classes
+- pyproject Python limit from 3.11 to 4
+- error messages to be more descriptive
+
+# 4.0.0rc2 - DATE (19/09/2022)
+
+### Added
+
+- workflow template update API
+- more examples
+- Hera type returns rather than `argo_workflow` SDK return types
+- `get_parameters_as` rather than `outputs`
+- list dependencies structuring
+- reorder of args to use default `Equals` for workflow and task result comparisons
+
+# 4.0.0rc1 - DATE (15/09/2022)
+
+### Added
+
+- workflow of workflows support, and general K8S resource provisioning, via resource templates
+- nested, parallel, DAGs
+- pod patch spec
+- support for arbitrary scripts, rather than only Python functions and containers
+- K8S-aligned resource specs
+- volumes on tasks
+- `IO` between tasks
+- `Task` build on submission
+- `IO` on parameters
+
+### Removed
+
+- `func` and `func_params` from `Task` in favor of `source` and `params`
+- `Resource` volumes, moved to `Task`
+- `CronWorkflow` and `WorkflowTemplate` services
+- `CronWorkflow` and `WorkflowTemplate` independent implementations
+- `Task` build on definition
+
+# 3.7.1 - DATE (30/08/2022)
+
+### Added
+
+- tolerations can now be set via cron workflow and workflow spec
+
+### Fixed
+
+- tolerations, node selectors and affinity should be set in the internal workflow spec
+
+# 3.7.0 - DATE (26/08/2022)
+
+### Added
+
+- support for Git artifact authentication credentials
+- tolerations can now be set via workflow
+- version via `hera.__version__`
+- volume specifications on workflows
+
+### Changed
+
+- float type handling for `max_cpu` and `min_cpu` properties in `Resources` class
+- kwarg value setting as a parameter
+
+# 3.6.4 - DATE (11/08/2022)
+
+### Removed
+
+- Remove python <3.11 constraint and unpin transitive dependencies
+
+# 3.6.3 - DATE (01/08/2022)
+
+### Changed
+
+- `pytz` version from `^2021.3` to `>=2021.3`
+
+### Added
+
+- workflow template parameters
+- privileged option to the security context
+
+# 3.6.2 - DATE (29/07/2022)
+
+### Changed
+
+- `Config.host` and `Config.verify_ssl` are now public; `WorkflowService.get_workflow_link` now references `Config.host`
+  to properly pull the host when using `set_global_host`.
+
+# 3.6.1 - DATE (17/07/2022)
+
+### Removed
+
+- `get_input_spec` from `InputArtifact` so that it relies on the inherited one that does not add the `from` field that
+  is not allowed in the Argo submission for input artifacts
+
+# 3.6.0 - DATE (10/07/2022)
+
+### Added
+
+- support for `subPath` in volume mounts
+- context management to workflow types. This supports the `with` clause and adds all tasks to a workflow automatically
+- task exit hook
+- HTTP artifact
+- global workflow parameters
+- input parameter caching through memoization
+- bucket field to GCS/S3 artifact, which was missing
+
+### Removed
+
+- assertion that `input_from` cannot be used with artifacts, which supports artifact input on fanned out tasks now
+
+# 3.5.0 - DATE (14/06/2022)
+
+### Added
+
+- support for multiple inputs from a fanned out task via `MultiInput`
+
+### Changed
+
+- `set_global_token` to take in a union of a string token or a callable
+
+# 3.4.0 - DATE (12/06/2022)
+
+### Added
+
+- node selectors on all workflow types
+- memoization
+- global parameter access on tasks
+- input/output parameters in addition to artifacts
+- affinity, anti-affinity, node affinity
+- client host/token global injection
+
+# 3.3.2 - DATE (30/05/2022)
+
+### Fixed
+
+- parallelism specification on spec templates
 
 # 3.3.1 - DATE (26/05/2022)
 

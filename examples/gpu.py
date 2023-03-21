@@ -2,11 +2,7 @@
 This task showcases how clients can request a particular number of GPUs to be available for a task and the specific
 type of GPU to request. The task uses the Horovod image as it provides Python and NVIDIA SMI.
 """
-from hera.resources import Resources
-from hera.task import Task
-from hera.toleration import GPUToleration
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import GPUToleration, Resources, Task, Workflow
 
 
 def do():
@@ -22,7 +18,7 @@ def do():
     | Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
     |                               |                      |               MIG M. |
     |===============================+======================+======================|
-    |   0  Tesla K80           Off  | 00000000:00:05.0 Off |                    0 |
+    |   0  Tesla T4            Off  | 00000000:00:05.0 Off |                    0 |
     | N/A   67C    P8    33W / 149W |      0MiB / 11441MiB |      0%      Default |
     |                               |                      |                  N/A |
     +-------------------------------+----------------------+----------------------+
@@ -40,18 +36,15 @@ def do():
     print(f'This is a task that uses GPUs! CUDA info:\n{os.popen("nvidia-smi").read()}')
 
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='https://my-argo-server.com', token='my-auth-token')
-w = Workflow('gpu', ws)
-gke_k80_gpu = {'cloud.google.com/gke-accelerator': 'nvidia-tesla-k80'}
-d = Task(
-    'do',
-    do,
-    image='horovod/horovod:0.22.1',
-    resources=Resources(gpus=1),
-    tolerations=[GPUToleration],
-    node_selectors=gke_k80_gpu,
-)
+with Workflow("gpu") as w:
+    gke_t4_gpu = {"cloud.google.com/gke-accelerator": "nvidia-tesla-t4"}
+    d = Task(
+        "do",
+        do,
+        image="horovod/horovod:0.22.1",
+        resources=Resources(gpus=1),
+        tolerations=[GPUToleration],
+        node_selectors=gke_t4_gpu,
+    )
 
-w.add_task(d)
 w.create()

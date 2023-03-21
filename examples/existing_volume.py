@@ -2,27 +2,22 @@
 This example showcases how Hera supports mounting existing volumes. These volumes are expected to already be
 provisioned and available as a persistent volume claim in the K8S cluster where Argo runs.
 """
-from hera.volumes import ExistingVolume
-from hera.resources import Resources
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+
+from hera import ExistingVolume, Task, Workflow
 
 
 def download(path: str):
     # we can run this task asynchronously for downloading some big file to an existing volume!
-    print(f'Would have downloaded from {path} to /vol')
+    print(f"Would have downloaded from {path} to /vol")
 
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='https://my-argo-server.com', token='my-auth-token')
-w = Workflow('existing-volume', ws)
-d = Task(
-    'download',
-    download,
-    [{'path': '/whatever/path'}],
-    resources=Resources(volumes=[ExistingVolume(name='my-vol-claim', mount_path='/vol')]),
-)
+# assumes you used `hera.set_global_token` and `hera.set_global_host` so that the workflow can be submitted
+with Workflow("existing-volume") as w:
+    Task(
+        "download",
+        download,
+        [{"path": "/whatever/path"}],
+        volumes=[ExistingVolume(name="my-vol-claim", mount_path="/vol")],
+    )
 
-w.add_task(d)
 w.create()

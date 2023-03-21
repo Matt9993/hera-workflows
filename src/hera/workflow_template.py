@@ -1,123 +1,53 @@
-"""The implementation of a Hera workflowTemplate for Argo-based workflowTemplates"""
-from typing import Any, Dict, Optional
+"""The implementation of a Hera cron workflow for Argo-based cron workflows"""
+from typing import Any, Optional, Tuple
 
 import graphviz
-from argo_workflows.models import (
-    IoArgoprojWorkflowV1alpha1DAGTemplate,
-    IoArgoprojWorkflowV1alpha1Template,
-    IoArgoprojWorkflowV1alpha1WorkflowSpec,
-    IoArgoprojWorkflowV1alpha1WorkflowTemplate,
-    ObjectMeta,
-)
+from argo_workflows.models import IoArgoprojWorkflowV1alpha1WorkflowTemplate
 
-from hera.security_context import WorkflowSecurityContext
-from hera.task import Task
-from hera.ttl_strategy import TTLStrategy
-from hera.workflow_editors import add_head, add_tail, add_task, add_tasks, on_exit
-from hera.workflow_template_service import WorkflowTemplateService
+from hera.global_config import GlobalConfig
+from hera.workflow import Workflow
 
 
-class WorkflowTemplate:
-    """A workflowTemplate representation.
+class WorkflowTemplate(Workflow):
+    """A workflow template representation.
 
-    The WorkflowTemplate is used as a functional representation for a collection of tasks and
-    steps. The WorkflowTemplate is basically the same as a Workflow but with a template you don't
-    have to write the same steps, you can reuse it over and over.
+    See `hera.workflow.Workflow` for parameterization.
 
-    Parameters
-    ----------
-    name: str
-        The workflowTemplate name. Note that the workflowTemplate initiation will replace underscores with dashes.
-    service: WorkflowService
-        A workflowTemplate service to use for submissions.
-        See `hera.v1.workflow_template_service.WorkflowTemplateService`.
-    parallelism: int = 50
-        The number of parallel tasks to run in case a task group is executed for multiple tasks.
-    service_account_name: Optional[str] = None
-        The name of the service account to use in all workflow tasks.
-    security_context:  Optional[WorkflowSecurityContext] = None
-        Define security settings for all containers in the workflow.
-    labels: Optional[Dict[str, str]] = None
-        A Dict of labels to attach to the Workflow object metadata
-    namespace: Optional[str] = 'default'
-        The namespace to use for creating the WorkflowTemplate.  Defaults to "default"
+    Notes
+    -----
+    See: https://argoproj.github.io/argo-workflows/workflow-templates/
     """
 
-    def __init__(
-        self,
-        name: str,
-        service: WorkflowTemplateService,
-        parallelism: int = 50,
-        service_account_name: Optional[str] = None,
-        labels: Optional[Dict[str, str]] = None,
-        namespace: Optional[str] = None,
-        security_context: Optional[WorkflowSecurityContext] = None,
-        ttl_strategy: Optional[TTLStrategy] = None,
-    ):
-        self.name = f'{name.replace("_", "-")}'  # RFC1123
-        self.namespace = namespace or 'default'
-        self.service = service
-        self.parallelism = parallelism
-        self.security_context = security_context
-        self.service_account_name = service_account_name
-        self.labels = labels
-
-        self.dag_template = IoArgoprojWorkflowV1alpha1DAGTemplate(tasks=[])
-        self.exit_template = IoArgoprojWorkflowV1alpha1Template(
-            name='exit-template',
-            steps=[],
-            dag=IoArgoprojWorkflowV1alpha1DAGTemplate(tasks=[]),
-            parallelism=self.parallelism,
+    def build(self) -> IoArgoprojWorkflowV1alpha1WorkflowTemplate:
+        """Builds the workflow"""
+        spec = super()._build_spec()
+        return IoArgoprojWorkflowV1alpha1WorkflowTemplate(
+            api_version=GlobalConfig.api_version,
+            kind=self.__class__.__name__,
+            metadata=self._build_metadata(),
+            spec=spec,
         )
 
-        self.template = IoArgoprojWorkflowV1alpha1Template(
-            name=self.name,
-            steps=[],
-            dag=self.dag_template,
-            parallelism=self.parallelism,
-        )
+    def create(self) -> "WorkflowTemplate":
+        """Creates a workflow template"""
+        if self.in_context:
+            raise ValueError("Cannot invoke `create` when using a Hera context")
+        self.service.create_workflow_template(self.build())
+        return self
 
-        self.spec = IoArgoprojWorkflowV1alpha1WorkflowSpec(
-            templates=[self.template], entrypoint=self.name, volumes=[], volume_claim_templates=[]
-        )
+    def lint(self) -> "WorkflowTemplate":
+        """Lint the workflow"""
+        self.service.lint_workflow_template(self.build())
+        return self
 
-        if ttl_strategy:
-            setattr(self.spec, 'ttl_strategy', ttl_strategy.argo_ttl_strategy)
+    def update(self) -> "WorkflowTemplate":
+        """Updates an existing workflow template"""
+        self.service.update_workflow_template(self.name, self.build())
+        return self
 
-        if self.security_context:
-            security_context = self.security_context.get_security_context()
-            setattr(self.spec, 'security_context', security_context)
-
-        if self.service_account_name:
-            setattr(self.template, 'service_account_name', self.service_account_name)
-            setattr(self.spec, 'service_account_name', self.service_account_name)
-
-        self.metadata = ObjectMeta(name=self.name)
-        if self.labels:
-            setattr(self.metadata, 'labels', self.labels)
-
-        self.workflow_template = IoArgoprojWorkflowV1alpha1WorkflowTemplate(metadata=self.metadata, spec=self.spec)
-
-    def add_task(self, t: Task) -> None:
-        add_task(self, t)
-
-    def add_tasks(self, *ts: Task) -> None:
-        add_tasks(self, *ts)
-
-    def add_head(self, t: Task, append: bool = True) -> None:
-        add_head(self, t, append=append)
-
-    def add_tail(self, t: Task, append: bool = True) -> None:
-        add_tail(self, t, append=append)
-
-    def on_exit(self, *t: Task) -> None:
-        on_exit(self, *t)
-
-    def create(self, namespace: Optional[str] = None) -> IoArgoprojWorkflowV1alpha1WorkflowTemplate:
-        """Creates the workflow"""
-        if namespace is None:
-            namespace = self.namespace
-        return self.service.create(self.workflow_template, namespace)
+    def delete(self) -> Tuple[object, int, dict]:
+        """Deletes the workflow"""
+        return self.service.delete_workflow_template(self.name)
 
     # extra function
     def visualize(self, format: str = "pdf", view: bool = False, is_test: bool = False) -> Optional[Any]:
@@ -139,33 +69,65 @@ class WorkflowTemplate:
         Returns:
             - Optional[Any]: If called in test mode return the graph object
         """
+        tasks = [e.__dict__ for e in self.dag.tasks]
+        # flatten if nested
+        for i, e in enumerate(tasks):
+            if e.get("dag", None):
+                last_not_exit_task = tasks[i - 1].get("name")
+                for item in self.to_dict()["spec"]["templates"]:
+                    if item.get("name") != self.name and item.get("dag", None):
+                        tasks.extend(item["dag"]["tasks"])
+
+        tasks = [d for d in tasks if d.get("dag", None) is None]
         # set name
         dot = graphviz.Digraph(comment=self.name)
 
-        tasks = [e.__dict__['_data_store'] for e in self.dag_template.tasks]
         for el in tasks:
             dot.node(el.get("name"), el.get("name"))
 
         for i, e in enumerate(tasks):
             # set default style for indicating connection type
             style = "filled"
+            color = "black"
+            deps = None
 
-            if e.get("dependencies", None):
+            # get the head element
+            head = e.get("name")
+
+            if e.get("depends", None):
                 # set different style for if condition
                 if e.get("when", None):
                     style = "dotted"
 
-                # get the head element
-                head = e.get("name")
+                if "Succeeded" in e.get("depends"):
+                    deps = [e.get("depends").split(".")[0]]
+                    color = "green2"
+                elif "Failed" in e.get("depends") or "Errored" in e.get("depends"):
+                    deps = [e.get("depends").split(".")[0]]
+                    color = "red2"
+                elif "&&" in e.get("depends"):
+                    deps = e.get("depends").split(" && ")
 
-                for dep in e.get("dependencies"):
+                else:
+                    deps = [e.get("depends")]
+
+            elif e.get("when"):
+                if "Succeeded" in e.get("when"):
+                    color = "green2"
+                else:
+                    color = "red2"
+                deps = [last_not_exit_task]
+
+            if deps:
+                for dep in deps:
                     # set current dep as tail
                     tail = dep
 
-                    dot.edge(tail_name=tail, head_name=head, style=style)
+                if head != tail:
+                    dot.edge(tail_name=tail, head_name=head, style=style, color=color)
 
         if is_test:
             return dot
         else:
-            dot.render(f'workflows-graph-output/{self.name}', view=view, format=format, cleanup=True)
+            dot.render(f"workflows-graph-output/{self.name}", view=view, format=format, cleanup=True)
             return dot

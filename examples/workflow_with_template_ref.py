@@ -1,9 +1,7 @@
-"""This example showcases how to run a workflow with a previously generated WorkflowTemplate with Hera"""
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import Task, TemplateRef, Workflow
 
-# TODO: replace the domain and token with your own
-ws = WorkflowService(host='', verify_ssl=False, token='')
-w = Workflow('workflow-with-template-ref', ws, namespace="argo", workflow_template_ref="coin-flip-template")
+# The name of the DAG template is either the name of WorkflowTemplate (default), or the `dag_name`
+with Workflow("workflow-with-template-ref") as w:
+    Task("coin-flip", template_ref=TemplateRef(name="hera-workflow-templates", template="coin-flip"))
 
 w.create()

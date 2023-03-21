@@ -3,31 +3,33 @@ This example showcases how clients can simplify their workflow submission proces
 top of Hera to support consistency in submission across users, teams, etc.
 """
 
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
-from pydantic import BaseModel
-
-from hera.env import EnvSpec
-from hera.input import InputFrom
-from hera.resources import Resources
-from hera.retry import Retry
-from hera.task import Task
-from hera.toleration import Toleration
-from hera.volumes import ExistingVolume
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import (
+    ExistingVolume,
+    Resources,
+    RetryStrategy,
+    Task,
+    Toleration,
+    Workflow,
+    WorkflowService,
+)
 
 
 def generate_token() -> str:
-    """Abstractly, generates a client Bearer token that passes auth with the Argo server for workflow submission"""
-    return 'my-bearer-token'
+    """
+    Abstractly, generates a client Bearer token that passes auth with the Argo server for workflow submission.
+
+    Alternatively, you can use `hera.set_global_token(callable_to_generate_token)` for setting a global token!
+    """
+    return "my-bearer-token"
 
 
 class MyWorkflowService(WorkflowService):
-    """Internal WorkflowService wrapper around Hera's WorkflowService to support consistency in auth token generation"""
+    """Internal service wrapper around Hera's WorkflowService to support consistency in auth token generation"""
 
-    def __init__(self, host: str = 'https://my-argo-domain.com', token: str = generate_token()):
-        super(MyWorkflowService, self).__init__(host=host, token=token, namespace='my-default-k8s-namespace')
+    def __init__(self, host: str = "https://my-argo-domain.com", token: str = generate_token()):
+        super(MyWorkflowService, self).__init__(host=host, token=token, namespace="my-default-k8s-namespace")
 
 
 class MyWorkflow(Workflow):
@@ -43,32 +45,28 @@ class MyTask(Task):
     def __init__(
         self,
         name: str,
-        func: Callable,
-        func_params: Optional[List[Dict[str, Union[int, str, float, dict, BaseModel]]]] = None,
-        input_from: Optional[InputFrom] = None,
-        image: str = 'python:3.7',
+        source: Optional[Union[Callable, str]] = None,
+        with_param: Optional[Any] = None,
+        image: str = "python:3.7",
         command: Optional[List[str]] = None,
-        env_specs: Optional[List[EnvSpec]] = None,
         resources: Resources = Resources(),
         tolerations: Optional[List[Toleration]] = None,
     ):
-        default_retry = Retry(duration=1, max_duration=20)
+        default_retry = RetryStrategy(backoff=dict(duration="1", max_duration="20"))
         # note that this gke-accelerator spec is only valid for GKE GPUs. For Azure and AWS you
         # might have to use the `node_selectors` field exclusively
-        default_node_selectors = {'cloud.google.com/gke-accelerator': 'nvidia-tesla-k80'}
-        default_working_dir = '/my-volume'
-        resources.existing_volume = ExistingVolume(name='my-volume', mount_path='/my-volume')
+        default_node_selectors = {"cloud.google.com/gke-accelerator": "nvidia-tesla-t4"}
+        default_working_dir = "/my-volume"
+        resources.existing_volume = ExistingVolume(name="my-volume", mount_path="/my-volume")
         super(MyTask, self).__init__(
             name,
-            func,
-            func_params,
-            input_from=input_from,
+            source,
+            with_param,
             image=image,
             command=command,
-            env_specs=env_specs,
             resources=resources,
             working_dir=default_working_dir,
-            retry=default_retry,
+            retry_strategy=default_retry,
             tolerations=tolerations,
             node_selectors=default_node_selectors,
         )
@@ -76,7 +74,7 @@ class MyTask(Task):
 
 def example():
     """Example usage of wrapper to demonstrate how it can slightly simplify submission"""
-    w = MyWorkflow('my-workflow')
-    t = MyTask('t', lambda: print(42))
-    w.add_task(t)
+    with MyWorkflow("my-workflow") as w:
+        MyTask("t", lambda: print(42))
+
     w.create()

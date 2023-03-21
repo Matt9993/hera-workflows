@@ -4,12 +4,15 @@
 The Argo was constructed by the shipwright Argus,
 and its crew were specially protected by the goddess Hera.
 ```
-
 (https://en.wikipedia.org/wiki/Argo)
 
-[![Build](https://github.com/argoproj-labs/hera-workflows/actions/workflows/cicd.yaml/badge.svg)](https://github.com/argoproj-labs/hera-workflows/blob/main/.github/workflows/cicd.yaml)
 
+[![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/argoproj-labs/hera-workflows)
+
+[![Build](https://github.com/argoproj-labs/hera-workflows/actions/workflows/cicd.yaml/badge.svg)](https://github.com/argoproj-labs/hera-workflows/blob/main/.github/workflows/cicd.yaml)
+[![Docs](https://readthedocs.org/projects/hera-workflows/badge/?version=latest)](https://hera-workflows.readthedocs.io/en/latest/?badge=latest)
 [![codecov](https://codecov.io/gh/argoproj-labs/hera-workflows/branch/main/graph/badge.svg?token=x4tvsQRKXP)](https://codecov.io/gh/argoproj-labs/hera-workflows)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [![Pypi](https://img.shields.io/pypi/v/hera-workflows.svg)](https://pypi.python.org/pypi/hera-workflows)
 [![CondaForge](https://anaconda.org/conda-forge/hera-workflows/badges/version.svg)](https://anaconda.org/conda-forge/hera-workflows)
@@ -19,34 +22,26 @@ and its crew were specially protected by the goddess Hera.
 [![Downloads/month](https://pepy.tech/badge/hera-workflows/month)](https://pepy.tech/project/hera-workflows)
 [![Downloads/week](https://pepy.tech/badge/hera-workflows/week)](https://pepy.tech/project/hera-workflows)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-
-Hera is a Python framework for constructing and submitting Argo Workflows. The main goal of Hera is to make Argo
-Workflows more accessible by abstracting away some setup that is typically necessary for constructing workflows.
-
-Python functions are first class citizens in Hera - they are the atomic units (execution payload) that are submitted for
-remote execution. The framework makes it easy to wrap execution payloads into Argo Workflow tasks, set dependencies,
-resources, etc.
+Hera is a Python framework for constructing and submitting Argo Workflows. The main goal of Hera is to make the Argo
+ecosystem accessible by simplifying workflow construction and submission.
 
 You can watch the introductory Hera presentation at the "Argo Workflows and Events Community Meeting 20 Oct
 2021" [here](https://www.youtube.com/watch?v=QETfzfVV-GY&t=181s)!
 
 # Table of content
 
-- [Assumptions](#assumptions)
 - [Installation](#installation)
-- [Contributing](#contributing)
-- [Concepts](#concepts)
 - [Examples](#examples)
+- [Requirements](#requirements)
+- [Contributing](#contributing)
 - [Comparison](#comparison)
 
-# Assumptions
+# Requirements
 
-Hera is exclusively dedicated to remote workflow submission and execution. Therefore, it requires an Argo server to be
-deployed to a Kubernetes cluster. Currently, Hera assumes that the Argo server sits behind an authentication layer that
-can authenticate workflow submission requests by using the Bearer token on the request. To learn how to deploy Argo to
-your own Kubernetes cluster you can follow the
+Hera requires an Argo server to be deployed to a Kubernetes cluster. Currently, Hera assumes that the Argo server sits
+behind an authentication layer that can authenticate workflow submission requests by using the Bearer token on the
+request. To learn how to deploy Argo to your own Kubernetes cluster you can follow the
 [Argo Workflows](https://argoproj.github.io/argo-workflows/quick-start/) guide!
 
 Another option for workflow submission without the authentication layer is using port forwarding to your Argo server
@@ -54,37 +49,37 @@ deployment and submitting workflows to `localhost:2746` (2746 is the default, bu
 refer to the documentation of [Argo Workflows](https://argoproj.github.io/argo-workflows/quick-start/) to see the
 command for port forward!
 
-In the future some of these assumptions may either increase or decrease depending on the direction of the project. Hera
-is mostly designed for practical data science purposes, which assumes the presence of a DevOps team to set up an Argo
-server for workflow submission.
-
 # Installation
 
-There are multiple ways to install Hera:
+| Source                                                         | Command                                                                                                        |
+|----------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| [PyPi](https://pypi.org/project/hera-workflows/)               | `pip install hera-workflows`                                                                                   |
+| [Conda](https://anaconda.org/conda-forge/hera-workflows)       | `conda install -c conda-forge hera-workflows`                                                                  |
+| [GitHub repo](https://github.com/argoproj-labs/hera-workflows) | `python -m pip install git+https://github.com/argoproj-labs/hera-workflows --ignore-installed`/`pip install .` |
 
-1. You can install from [PyPi](https://pypi.org/project/hera-workflows/):
+# Examples
 
-   ```shell
-   pip install hera-workflows
-   ```
+```python
+from hera import Task, Workflow
 
-2. You can install from [conda](https://anaconda.org/conda-forge/hera-workflows):
 
-   ```shell
-   conda install -c conda-forge hera-workflows
-   ```
+def say(message: str):
+    print(message)
 
-3. Install it directly from this repository using:
 
-   ```shell
-   python -m pip install git+https://github.com/argoproj-labs/hera-workflows  --ignore-installed
-   ```
+with Workflow("diamond") as w:
+    a = Task('a', say, ['This is task A!'])
+    b = Task('b', say, ['This is task B!'])
+    c = Task('c', say, ['This is task C!'])
+    d = Task('d', say, ['This is task D!'])
 
-4. Alternatively, you can clone this repository and then run the following to install:
+    a >> [b, c] >> d
 
-   ```shell
-   pip install .
-   ```
+w.create()
+```
+
+See the [examples](https://github.com/argoproj-labs/hera-workflows/tree/main/examples) directory for a collection of
+Argo workflow construction and submission via Hera!
 
 # Contributing
 
@@ -94,7 +89,7 @@ If you plan to submit contributions to Hera you can install Hera in a virtual en
 poetry install
 ```
 
-In you activated `poetry shell`, you can utilize the tasks found in `tox.ini`, e.g.:
+In your activated `poetry shell`, you can utilize the tasks found in `tox.ini`, e.g.:
 
 To run tests on all supported python versions with coverage run [tox](https://tox.wiki/en/latest/):
 
@@ -119,42 +114,6 @@ As `coverage` *depends* on `py37`, it will run *after* `py37`
 See project `tox.ini` for more details
 
 Also, see the [contributing guide](https://github.com/argoproj-labs/hera-workflows/blob/main/CONTRIBUTING.md)!
-
-# Concepts
-
-Currently, Hera is centered around two core concepts. These concepts are also used by Argo, which Hera aims to stay
-consistent with:
-
-- `Task` - the object that holds the Python function for remote execution/the atomic unit of execution;
-- `Workflow` - the higher level representation of a collection of tasks.
-
-# Examples
-
-A very primitive example of submitting a task within a workflow through Hera is:
-
-```python
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
-
-
-def say(message: str):
-    """
-    This can be anything as long as the Docker image satisfies the dependencies. You can import anything Python
-    that is in your container e.g torch, tensorflow, scipy, biopython, etc - just provide an image to the task!
-    """
-    print(message)
-
-
-ws = WorkflowService(host='my-argo-domain.com', token='my-argo-server-token')
-w = Workflow('my-workflow', ws)
-t = Task('say', say, [{'message': 'Hello, world!'}])
-w.add_task(t)
-w.create()
-```
-
-See the [examples](https://github.com/argoproj-labs/hera-workflows/tree/main/examples) directory for a collection of
-Argo workflow construction and submission via Hera!
 
 # Comparison
 
@@ -181,26 +140,21 @@ executable payloads rather than workflow setup. Here's a side by side comparison
 <td valign="top"><p>
 
 ```python
-from hera.task import Task
-from hera.workflow import Workflow
-from hera.workflow_service import WorkflowService
+from hera import Task, Workflow
 
 
 def say(message: str):
     print(message)
 
 
-ws = WorkflowService(host='my-argo-server.com', token='my-auth-token')
-w = Workflow('diamond', ws)
-a = Task('A', say, [{'message': 'This is task A!'}])
-b = Task('B', say, [{'message': 'This is task B!'}])
-c = Task('C', say, [{'message': 'This is task C!'}])
-d = Task('D', say, [{'message': 'This is task D!'}])
+with Workflow("diamond") as w:
+    a = Task('a', say, ['This is task A!'])
+    b = Task('b', say, ['This is task B!'])
+    c = Task('c', say, ['This is task C!'])
+    d = Task('d', say, ['This is task D!'])
 
-a.next(b).next(d)  # a >> b >> d
-a.next(c).next(d)  # a >> c >> d
+    a >> [b, c] >> d
 
-w.add_tasks(a, b, c, d)
 w.create()
 ```
 

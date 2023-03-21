@@ -4,21 +4,24 @@ from enum import Enum
 class WorkflowStatus(str, Enum):
     """Placeholder for workflow statuses"""
 
-    Running = 'Running'
-    Succeeded = 'Succeeded'
-    Failed = 'Failed'
-    Error = 'Error'
-    Terminated = 'Terminated'
+    Running = "Running"
+    Succeeded = "Succeeded"
+    Failed = "Failed"
+    Error = "Error"
+    Terminated = "Terminated"
+
+    def __str__(self):
+        return str(self.value)
 
     @classmethod
-    def from_argo_status(cls, s: str) -> 'WorkflowStatus':
-        """Turns an Argo status into a Dyno workflows representation"""
+    def from_argo_status(cls, s: str) -> "WorkflowStatus":
+        """Turns an Argo status into a Hera workflow status representation"""
         switch = {
-            'Running': WorkflowStatus.Running,
-            'Succeeded': WorkflowStatus.Succeeded,
-            'Failed': WorkflowStatus.Failed,
-            'Error': WorkflowStatus.Error,
-            'Terminated': WorkflowStatus.Terminated,
+            "Running": WorkflowStatus.Running,
+            "Succeeded": WorkflowStatus.Succeeded,
+            "Failed": WorkflowStatus.Failed,
+            "Error": WorkflowStatus.Error,
+            "Terminated": WorkflowStatus.Terminated,
         }
 
         ss = switch.get(s)
