@@ -1,4 +1,4 @@
-# Hera (hera-workflows)
+# Hera (hera-workflows) + visualize function
 
 ```text
 The Argo was constructed by the shipwright Argus,
